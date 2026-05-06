@@ -1,7 +1,24 @@
 import { useEffect, useState } from "react";
 
+import { auth, db } from "../lib/firebase";
+import {
+  onAuthStateChanged,
+} from "firebase/auth";
+
+import {
+  collection,
+  addDoc,
+  getDocs,
+  query,
+  where,
+} from "firebase/firestore";
+
+import StockLogin from "./StockLogin";
+
 export default function StockDashboard() {
+  const [user, setUser] = useState(null);
   const [stocks, setStocks] = useState([]);
+
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("");
   const [sortMode, setSortMode] = useState("name");
@@ -15,30 +32,43 @@ export default function StockDashboard() {
     currentPrice: "",
   });
 
-  // ✅ 안전 로딩 (Astro 핵심)
+  // 🔐 로그인 상태 감지
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (u) loadData(u.uid);
+    });
 
-    try {
-      const saved = localStorage.getItem("stocks");
-      if (saved) setStocks(JSON.parse(saved) || []);
-    } catch (e) {
-      console.error(e);
-    }
+    return () => unsub();
   }, []);
 
-  // 💾 저장
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    localStorage.setItem("stocks", JSON.stringify(stocks));
-  }, [stocks]);
+  // 📥 Firestore 불러오기
+  const loadData = async (uid) => {
+    const q = query(collection(db, "stocks"), where("userId", "==", uid));
+    const snap = await getDocs(q);
+
+    const data = snap.docs.map((d) => d.data());
+
+    setStocks(data[0]?.data || []);
+  };
+
+  // 💾 Firestore 저장
+  const saveToDB = async (newStocks) => {
+    if (!user) return;
+
+    await addDoc(collection(db, "stocks"), {
+      userId: user.uid,
+      data: newStocks,
+      updatedAt: new Date().toISOString(),
+    });
+  };
 
   const handleChange = (e) => {
     setForm({ ...form, [e.target.name]: e.target.value });
   };
 
-  // ➕ 추가 / 수정 (안정형)
-  const saveStock = () => {
+  // ➕ 추가 / 수정
+  const saveStock = async () => {
     if (!form.name.trim()) return;
 
     const record = {
@@ -48,29 +78,33 @@ export default function StockDashboard() {
       date: new Date().toISOString(),
     };
 
-    const newItem = {
-      id: Date.now(),
-      category: form.category || "기본",
-      name: form.name,
-      history: [record],
-    };
+    let updated;
 
     if (editIndex !== null) {
-      const copy = [...stocks];
-      const target = copy[editIndex];
+      updated = [...stocks];
 
-      copy[editIndex] = {
-        ...target,
+      updated[editIndex] = {
+        ...updated[editIndex],
         category: form.category,
         name: form.name,
-        history: [...(target?.history || []), record],
+        history: [...(updated[editIndex].history || []), record],
       };
 
-      setStocks(copy);
       setEditIndex(null);
     } else {
-      setStocks([...stocks, newItem]);
+      updated = [
+        ...stocks,
+        {
+          id: Date.now(),
+          category: form.category,
+          name: form.name,
+          history: [record],
+        },
+      ];
     }
+
+    setStocks(updated);
+    await saveToDB(updated);
 
     setForm({
       category: "기본",
@@ -81,13 +115,13 @@ export default function StockDashboard() {
     });
   };
 
-  // ✏️ 수정 시작
+  // ✏️ 수정
   const startEdit = (stock, index) => {
     const last = stock?.history?.at(-1) || {};
 
     setForm({
-      category: stock.category || "기본",
-      name: stock.name || "",
+      category: stock.category,
+      name: stock.name,
       buyPrice: last.buyPrice || "",
       quantity: last.quantity || "",
       currentPrice: last.currentPrice || "",
@@ -97,16 +131,17 @@ export default function StockDashboard() {
   };
 
   // 🗑 삭제
-  const deleteStock = (index) => {
-    const copy = [...stocks];
-    copy.splice(index, 1);
-    setStocks(copy);
+  const deleteStock = async (index) => {
+    const updated = [...stocks];
+    updated.splice(index, 1);
+
+    setStocks(updated);
+    await saveToDB(updated);
   };
 
   // 📊 계산
   const calc = (s) => {
     const last = s?.history?.at(-1);
-
     if (!last) return { invest: 0, current: 0, profit: 0 };
 
     const invest = last.buyPrice * last.quantity;
@@ -146,9 +181,13 @@ export default function StockDashboard() {
 
   const categories = [...new Set(stocks.map((s) => s.category))];
 
+  // 🔐 로그인 안 했으면 로그인 화면
+  if (!user) return <StockLogin />;
+
   return (
     <div className="wrap">
-      <h1>나의 주식, 한눈에 보기!</h1>
+      <h1>📊 주식 포트폴리오</h1>
+      <p>로그인: {user.email}</p>
 
       {/* 입력 */}
       <div className="card">
@@ -195,9 +234,7 @@ export default function StockDashboard() {
 
           return (
             <div key={i} className="item">
-              <div>
-                <b>{s.name}</b> ({s.category})
-              </div>
+              <b>{s.name}</b> ({s.category})
 
               <div>
                 매입 {c.invest.toLocaleString()} / 현재 {c.current.toLocaleString()}
@@ -212,16 +249,13 @@ export default function StockDashboard() {
                 <button onClick={() => deleteStock(i)}>삭제</button>
               </div>
 
-              {/* 📜 히스토리 */}
               <details>
                 <summary>과거 기록</summary>
 
                 {(s.history || []).map((h, idx) => (
                   <div key={idx} className="history">
                     {h.date?.slice(0, 10)} |
-                    매입:{h.buyPrice} |
-                    수량:{h.quantity} |
-                    현재:{h.currentPrice}
+                    {h.buyPrice} / {h.quantity} / {h.currentPrice}
                   </div>
                 ))}
               </details>
@@ -230,60 +264,14 @@ export default function StockDashboard() {
         })}
       </div>
 
-      {/* 스타일 */}
       <style>{`
-        .wrap{
-          padding:24px;
-          background:#f8fafc;
-          font-family:system-ui;
-          min-height:100vh;
-        }
-
-        h1{font-size:28px;margin-bottom:20px}
-
-        .card{
-          background:white;
-          padding:16px;
-          border-radius:12px;
-          margin-bottom:16px;
-          box-shadow:0 4px 10px rgba(0,0,0,0.06);
-        }
-
-        input{
-          padding:8px;
-          margin:6px;
-          border:1px solid #e5e7eb;
-          border-radius:8px;
-        }
-
-        button{
-          margin:4px;
-          padding:6px 10px;
-          border:none;
-          border-radius:8px;
-          background:#2563eb;
-          color:white;
-          cursor:pointer;
-        }
-
-        .row{
-          display:flex;
-          gap:8px;
-          flex-wrap:wrap;
-        }
-
-        .item{
-          border-top:1px solid #eee;
-          padding:10px 0;
-        }
-
-        .history{
-          font-size:14px;
-          background:#f1f5f9;
-          padding:6px;
-          border-radius:8px;
-          margin-top:6px;
-        }
+        .wrap{padding:24px;background:#f8fafc;font-family:system-ui}
+        .card{background:white;padding:16px;border-radius:12px;margin-bottom:16px}
+        input{padding:8px;margin:6px;border:1px solid #ddd;border-radius:8px}
+        button{margin:4px;padding:6px 10px;background:#2563eb;color:white;border:none;border-radius:8px}
+        .row{display:flex;gap:8px;flex-wrap:wrap}
+        .item{border-top:1px solid #eee;padding:10px 0}
+        .history{font-size:14px;background:#f1f5f9;padding:6px;margin-top:6px;border-radius:6px}
       `}</style>
     </div>
   );

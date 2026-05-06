@@ -1,15 +1,32 @@
-// @ts-check
-import { defineConfig } from 'astro/config';
+import { defineConfig } from "astro/config";
+import react from "@astrojs/react";
+import { VitePWA } from "vite-plugin-pwa";
 
-import tailwindcss from '@tailwindcss/vite';
-
-import react from '@astrojs/react';
-
-// https://astro.build/config
 export default defineConfig({
-  vite: {
-    plugins: [tailwindcss()]
-  },
+  integrations: [
+    react(),
+  ],
 
-  integrations: [react()]
+  vite: {
+    plugins: [
+      VitePWA({
+        registerType: "autoUpdate",
+        manifest: {
+          name: "Stock App",
+          short_name: "Stocks",
+          start_url: "/",
+          display: "standalone",
+          background_color: "#ffffff",
+          theme_color: "#2563eb",
+          icons: [
+            {
+              src: "/favicon.svg",
+              sizes: "192x192",
+              type: "image/svg+xml",
+            },
+          ],
+        },
+      }),
+    ],
+  },
 });
